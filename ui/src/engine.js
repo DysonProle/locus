@@ -2,7 +2,7 @@
 // Every key press is press(state, key) -> new state, so tests can drive it.
 import { seedStore } from './data.js'
 import { SLOT, addDays, dayName, dayStart, occurrences, occursIn, retime, slotOf, timeName, weekStart, whenName } from './calendar.js'
-import { MOTIONS, TOOL_KEYS, VIEW, isLaunch, keysOf, lookup } from './keymap.js'
+import { KEYS, MOTIONS, TOOL_KEYS, VIEW, bound, isLaunch, keysOf, shown, spell } from './keymap.js'
 
 export { COMMAND_KEYS, CONSEQUENTIAL, RESERVED, TOOL_KEYS } from './keymap.js'
 
@@ -27,6 +27,7 @@ export function init(store = seedStore(), now = Date.now() / 1000) {
     active: 'p1',
     paneSeq: 1,
     mode: 'normal',
+    prefix: [],
     bar: { text: '', i: 0 },
     typing: null,
     held: null,
@@ -247,7 +248,10 @@ function toolEntries(s) {
 
 // What this view can do, with the keys that do it, always on screen. Commands
 // come straight from rootMenu, so a label can't disagree with what the key runs.
-export function viewActions(s) {
+export function viewActions(s, keys = KEYS) {
+  if (s.prefix.length) {
+    return Object.entries(tableAt(s, keys)).map(([key, to]) => [shown(key), typeof to === 'string' ? words(to) : '…'])
+  }
   const f = frame(s)
   const k = kind(s, f)
   const o = s.store[f.id]
@@ -1409,12 +1413,30 @@ const GRAMMAR = {
   },
 }
 
-function normalKey(s, k) {
-  const c = lookup(k)
+// A key that leads to more keys leaves its spelling in s.prefix, and the next
+// press is looked up in the table it leads to.
+const tableAt = (s, keys) => s.prefix.reduce((table, key) => table[key], keys)
+// A command's name in words, for a table of keys that has no labels: 'tile left'.
+const words = (command) => command.replace(/[A-Z]/g, (c) => ` ${c.toLowerCase()}`)
+
+function normalKey(s, k, keys) {
+  const before = s.prefix
+  const table = tableAt(s, keys)
+  const key = bound(k, table)
+  const c = key ? table[key] : null
+  s.prefix = []
+  if (c && typeof c !== 'string') {
+    s.prefix = [...before, key]
+    return true
+  }
   if (c) {
     if (MOTIONS.has(c)) move(s, c)
     else if (GRAMMAR[c]) GRAMMAR[c](s)
     else runVerb(s, c)
+    return true
+  }
+  if (before.length) {
+    if (k.key !== 'Escape') s.msg = `Nothing on ${[...before, spell(k)].map(shown).join(' ')}.`
     return true
   }
   if (k.alt || k.ctrl) return false
@@ -1456,8 +1478,9 @@ function copyStore(store) {
   return out
 }
 
-// key: { key, shift, alt, ctrl }
-export function press(state, k) {
+// key: { key, shift, alt, ctrl }. The key table is a parameter so a test can
+// bring its own.
+export function press(state, k, keys = KEYS) {
   const { undo: u, redo: r, store, ...rest } = state
   const s = { ...structuredClone(rest), store: copyStore(store), undo: u, redo: r, msg: '', now: k.now ?? state.now, _dirty: null, handled: true }
   const media = { MediaPlayPause: 1, MediaTrackNext: 1, MediaTrackPrevious: 1 }
@@ -1470,7 +1493,7 @@ export function press(state, k) {
   } else if (s.mode === 'typing') s.handled = typeKey(s, k)
   else if (s.mode === 'bar') barKey(s, k)
   else if (s.mode === 'find') findKey(s, k)
-  else s.handled = normalKey(s, k)
+  else s.handled = normalKey(s, k, keys)
   if (s._dirty) {
     s.undo = [...s.undo, { store: state.store, label: s._dirty }].slice(-200)
     s.redo = []

@@ -3,6 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { init, press, frame, items, titleOf, kind, targetLabel, completions, rootMenu, TOOL_KEYS, CONSEQUENTIAL, range, tick, viewActions, visibleSize, syncPlayer, applyRemote } from '../src/engine.js'
 import { seedStore } from '../src/data.js'
+import { KEYS, parse } from '../src/keymap.js'
 import { withMedia } from '../src/media.js'
 
 const KEY = { sp: ' ', esc: 'Escape', ent: 'Enter', tab: 'Tab', bs: 'Backspace' }
@@ -543,4 +544,58 @@ test('Enter opens things like Space, and still ends typing', () => {
   assert.notEqual(s.typing?.objId, line)
   assert.equal(s.mode, 'typing')
   assert.equal(frame(s).id, frame(type(init(), 'n sp')).id)
+})
+
+test('every key in the table names a command the engine can run', () => {
+  for (const [key, command] of Object.entries(KEYS)) {
+    assert.equal(typeof command, 'string', key)
+    for (const start of ['', 'n sp', 'p sp', 'C']) {
+      assert.equal(press(type(init(), start), parse(key)).handled, true, `${key} after "${start}"`)
+    }
+  }
+})
+
+test('a key can lead to more keys, shown while they wait', () => {
+  const keys = { ...KEYS, ',': { l: 'right', n: 'end', 'S-Space': 'newTile', ',': { h: 'end' } } }
+  const go = (s, ...presses) => presses.reduce((at, k) => press(at, typeof k === 'string' ? { key: k } : k, keys), s)
+  const home = init()
+  const last = frame(type(home, 'G')).focus
+
+  let s = go(home, ',')
+  assert.deepEqual(s.prefix, [','])
+  assert.equal(frame(s).focus, frame(home).focus)
+  assert.deepEqual(viewActions(s, keys), [['l', 'right'], ['n', 'end'], ['⇧ Space', 'new tile'], [',', '…']])
+
+  s = go(s, 'l')
+  assert.deepEqual(s.prefix, [])
+  assert.equal(frame(s).focus, frame(type(home, 'l')).focus)
+  assert.deepEqual(viewActions(s, keys), viewActions(type(home, 'l')))
+
+  // Inside the table a key means what the table says: n is not Notes here.
+  s = go(home, ',', 'n')
+  assert.equal(frame(s).id, 'home')
+  assert.equal(frame(s).focus, last)
+
+  s = go(home, ',', { key: ' ', shift: true })
+  assert.equal(Object.keys(s.panes).length, 2)
+
+  s = go(home, ',', ',')
+  assert.deepEqual(s.prefix, [',', ','])
+  assert.deepEqual(viewActions(s, keys), [['h', 'end']])
+  assert.equal(frame(go(s, 'h')).focus, last)
+
+  // A key the table doesn't have ends it, and says so. Esc ends it quietly.
+  s = go(home, ',', 'x')
+  assert.deepEqual(s.prefix, [])
+  assert.equal(s.msg, 'Nothing on , x.')
+  assert.deepEqual(s.undo, [])
+  s = go(home, ',', ',', { key: 'ArrowLeft', alt: true })
+  assert.equal(s.msg, 'Nothing on , , Alt ArrowLeft.')
+  s = go(home, ',', 'Escape')
+  assert.deepEqual(s.prefix, [])
+  assert.equal(s.msg, '')
+  assert.equal(frame(s).id, 'home')
+
+  // Without such a key in the table, nothing waits.
+  assert.deepEqual(type(home, 'l j').prefix, [])
 })

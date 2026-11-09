@@ -1,34 +1,35 @@
 // Every key the interface binds outside typing, as data. The engine looks a key
 // up here and runs the command it names. The key sets and the ? panel below are
-// worked out from these tables, so they can't disagree with what the keys do.
+// worked out from this table, so they can't disagree with what the keys do.
 // Typing, the command bar and find take text, and read their few keys directly.
+//
+// A key is written the way Emacs writes one: the key, with M- in front for Alt
+// and S- for Shift, in that order. A character is its own key (h, H, ?), so S-
+// only goes on keys that have a name: S-Space, M-S-ArrowLeft. Names are the
+// browser's, with Space for the space bar. Ctrl and the system key are left to
+// the browser, so nothing here can bind them.
+//
+// A key leads to a command, or to another table of the keys that can follow it.
 
 // Motions are named for their role, and each view decides what one means: a big
 // step left is the start of a row on a grid, a word in text, a week in the calendar.
 export const MOTIONS = new Set(['left', 'down', 'up', 'right', 'bigLeft', 'bigDown', 'bigUp', 'bigRight', 'start', 'end'])
 
-export const NORMAL = {
+export const KEYS = {
   h: 'left', j: 'down', k: 'up', l: 'right',
   H: 'bigLeft', J: 'bigDown', K: 'bigUp', L: 'bigRight',
   g: 'start', G: 'end',
-  ' ': 'activate', Escape: 'back',
+  Space: 'activate', Escape: 'back',
   s: 'mark', S: 'range', a: 'all',
   i: 'edit', o: 'create',
   x: 'cut', c: 'copy', v: 'paste', z: 'undo', Z: 'redo', '.': 'repeat',
   ';': 'bar', '?': 'help', '/': 'find',
   ArrowLeft: 'left', ArrowDown: 'down', ArrowUp: 'up', ArrowRight: 'right',
   Enter: 'activate',
-}
-
-// Checked before NORMAL when Shift is held. A shifted letter is its own key above.
-export const SHIFT = {
-  ' ': 'newTile',
-  ArrowLeft: 'bigLeft', ArrowDown: 'bigDown', ArrowUp: 'bigUp', ArrowRight: 'bigRight',
-}
-
-export const ALT = {
-  h: 'tileLeft', j: 'tileDown', k: 'tileUp', l: 'tileRight', q: 'closeTile',
-  ArrowLeft: 'tileLeft', ArrowDown: 'tileDown', ArrowUp: 'tileUp', ArrowRight: 'tileRight',
+  'S-Space': 'newTile',
+  'S-ArrowLeft': 'bigLeft', 'S-ArrowDown': 'bigDown', 'S-ArrowUp': 'bigUp', 'S-ArrowRight': 'bigRight',
+  'M-h': 'tileLeft', 'M-j': 'tileDown', 'M-k': 'tileUp', 'M-l': 'tileRight', 'M-q': 'closeTile',
+  'M-ArrowLeft': 'tileLeft', 'M-ArrowDown': 'tileDown', 'M-ArrowUp': 'tileUp', 'M-ArrowRight': 'tileRight',
 }
 
 // Each opens the Home item whose launch field is that key.
@@ -50,20 +51,65 @@ export const VIEW = {
   info: 'I', newTile: 'T',
 }
 
-const hit = (table, key) => (Object.hasOwn(table, key) ? table[key] : null)
+// ---------- Spelling ----------
 
-// The command a key press names in normal mode, or null.
-export function lookup(k) {
-  if (k.alt) return hit(ALT, k.key)
+// How a press is written: 'h', 'S-Space', 'M-ArrowLeft'.
+export function spell(k) {
+  const name = k.key === ' ' ? 'Space' : k.key
+  return (k.alt ? 'M-' : '') + (k.shift && name.length > 1 ? 'S-' : '') + name
+}
+
+// The press a spelling stands for.
+export function parse(spelling) {
+  let key = spelling
+  const cut = (mark) => {
+    if (key.length < 3 || !key.startsWith(mark)) return false
+    key = key.slice(2)
+    return true
+  }
+  const alt = cut('M-')
+  const shift = cut('S-')
+  return { key: key === 'Space' ? ' ' : key, alt, shift }
+}
+
+// Every key has one spelling, and a table that uses another would hold a
+// binding that never fires. This refuses such a table.
+const NAMED = /^[A-Z][A-Za-z0-9]+$/
+export function check(table, before = []) {
+  for (const [spelling, to] of Object.entries(table)) {
+    const at = [...before, spelling]
+    const k = parse(spelling)
+    if (spell(k) !== spelling || !(k.key.length === 1 || NAMED.test(k.key))) throw new Error(`Key table: "${at.join(' ')}" is not how a key is written.`)
+    if (typeof to === 'string' ? !to : !to || typeof to !== 'object') throw new Error(`Key table: "${at.join(' ')}" needs a command or a table.`)
+    if (typeof to !== 'string') check(to, at)
+  }
+  return table
+}
+check(KEYS)
+
+// How this table spells a press, or null when it has nothing for it. Shift with
+// nothing of its own falls back to the key without it, so Shift+Enter is Enter.
+export function bound(k, table = KEYS) {
   if (k.ctrl) return null
-  return (k.shift && hit(SHIFT, k.key)) || hit(NORMAL, k.key)
+  const spelling = spell(k)
+  if (Object.hasOwn(table, spelling)) return spelling
+  const plain = spell({ ...k, shift: false })
+  return k.shift && Object.hasOwn(table, plain) ? plain : null
+}
+
+// What a press leads to in this table: a command, a table of the keys that can
+// follow, or null.
+export function lookup(k, table = KEYS) {
+  const spelling = bound(k, table)
+  return spelling ? table[spelling] : null
 }
 
 export const isLaunch = (key) => Object.hasOwn(LAUNCH, key)
 
 // ---------- Key sets ----------
 
-export const RESERVED = new Set([...Object.keys(NORMAL), ...Object.keys(LAUNCH)].filter((c) => c.length === 1))
+const plainKeys = Object.keys(KEYS).map(parse).filter((k) => !k.alt && !k.shift).map((k) => k.key)
+export const RESERVED = new Set([...plainKeys, ...Object.keys(LAUNCH)].filter((c) => c.length === 1))
 
 // These commit something that can't be taken back with a keystroke. They are
 // never reused for anything else, so muscle memory can't fire one by accident.
@@ -79,13 +125,19 @@ export const TOOL_KEYS = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 // ---------- Showing keys ----------
 
 const NAMES = { ' ': 'Space', Escape: 'Esc' }
-const keysIn = (table, ...commands) => commands
-  .map((c) => Object.keys(table).find((key) => table[key] === c))
-  .map((key) => NAMES[key] ?? key)
-  .join(' ')
+const held = (k) => (k.alt ? 'Alt ' : '') + (k.shift ? '⇧ ' : '')
+const name = (k) => NAMES[k.key] ?? k.key
 
-// The keys for these commands, as the interface writes them: 'h j k l'.
-export const keysOf = (...commands) => keysIn(NORMAL, ...commands)
+// A key as the interface writes it: 'Alt h', '⇧ Space', 'Esc'.
+export const shown = (spelling) => held(parse(spelling)) + name(parse(spelling))
+
+// The keys for these commands, as the interface writes them: 'h j k l'. Keys
+// held the same way say so once: 'Alt h j k l'.
+export function keysOf(...commands) {
+  const keys = commands.map((c) => Object.keys(KEYS).find((spelling) => KEYS[spelling] === c)).filter(Boolean).map(parse)
+  const same = keys.every((k) => held(k) === held(keys[0]))
+  return same && keys.length ? held(keys[0]) + keys.map(name).join(' ') : keys.map((k) => held(k) + name(k)).join(' ')
+}
 
 const row = (commands, what) => [keysOf(...commands.split(' ')), what]
 
@@ -101,7 +153,7 @@ export const HELP = [
   ['In and out', [
     [`${keysOf('activate')} Enter`, 'open, play, tick'],
     row('back', 'back'),
-    [`⇧ ${keysIn(SHIFT, 'newTile')}`, 'open in a new tile'],
+    row('newTile', 'open in a new tile'),
   ]],
   ['Select', [row('mark', 'mark one'), row('range', 'start a range'), row('all', 'all')]],
   ['Verbs', [
@@ -112,7 +164,7 @@ export const HELP = [
   ['Everything else', [
     row('bar', 'command, or ask the agent'),
     [`${VIEW.approve} ${VIEW.reject}`, 'approve, reject'],
-    [`Alt ${keysIn(ALT, 'tileLeft', 'tileDown', 'tileUp', 'tileRight')}`, 'between tiles'],
-    [`Alt ${keysIn(ALT, 'closeTile')}`, 'close a tile'],
+    row('tileLeft tileDown tileUp tileRight', 'between tiles'),
+    row('closeTile', 'close a tile'),
   ]],
 ]
