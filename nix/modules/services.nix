@@ -92,6 +92,84 @@ in
         description = "Directory with desk/ and scripts/ (set by the flake module).";
       };
     };
+
+    ui = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          The interface (ui/) and its host (`locus-ui.service`): serves the
+          page, proxies %store with the ship's login, and runs the agent.
+          The host has no login of its own, so whoever reaches its port
+          acts as the ship's owner. Keep it on loopback, or behind
+          something that authenticates.
+        '';
+      };
+      package = lib.mkOption {
+        type = lib.types.package;
+        description = "locus-ui package (set by the flake module).";
+      };
+      listenAddress = lib.mkOption {
+        type = lib.types.str;
+        default = "127.0.0.1";
+        description = "Address the host listens on. See the warning on enable.";
+      };
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 5180;
+        description = "Host listen port.";
+      };
+      openFirewall = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Open the host port in the firewall. See the warning on enable.";
+      };
+      agent = {
+        keyFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "/etc/locus-ui/model.env";
+          description = ''
+            A file holding `ANTHROPIC_API_KEY=...`, readable by root only.
+            It is read as an environment file when the host starts, and is
+            never copied into the Nix store. With it, the agent runs the
+            `claude` command (see `claude`). Without it, the agent is a
+            canned model that knows only the phrases the tests use.
+          '';
+        };
+        model = lib.mkOption {
+          type = lib.types.str;
+          default = "claude-haiku-5-5";
+          description = "The model the agent asks for, when it has a key.";
+        };
+        claude = lib.mkOption {
+          type = lib.types.listOf (lib.types.either lib.types.package lib.types.str);
+          default = [ ];
+          example = lib.literalExpression ''[ "/usr/local" ]'';
+          description = ''
+            Where the `claude` command is: packages or prefixes (their `bin`
+            is used) added to the host's PATH.
+          '';
+        };
+      };
+      seed = {
+        enable = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = ''
+            Fill an empty %store with the Home layout and the object types
+            the interface needs (`locus-ui-store.service`). A store that
+            already has a home is left alone, and each start adds what
+            newer versions of the interface expect.
+          '';
+        };
+        samples = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = "Include the sample notes and people when seeding.";
+        };
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -179,8 +257,86 @@ in
       };
     };
 
-    networking.firewall.allowedTCPPorts = lib.mkIf (
-      cfg.gateway.enable && cfg.gateway.openFirewall
-    ) [ cfg.gateway.port ];
+    # The interface's host. Its +code file is written as root before each
+    # start, readable only by the host's dynamic user.
+    systemd.services.locus-ui = lib.mkIf cfg.ui.enable {
+      description = "Locus interface and its host";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "urbit.service" ] ++ lib.optional cfg.desk.enable "locus-desk.service";
+      requires = [ "urbit.service" ];
+      environment = {
+        HOST = cfg.ui.listenAddress;
+        PORT = toString cfg.ui.port;
+        LOCUS_SHIP = "http://127.0.0.1:${toString cfg.urbit.httpPort}";
+        LOCUS_CODE_FILE = "/run/locus-ui/code";
+        LOCUS_MEDIA = "/var/lib/locus-ui";
+      } // (if cfg.ui.agent.keyFile == null then {
+        LOCUS_LLM = "stub";
+      } else {
+        LOCUS_LLM = "claude";
+        LOCUS_MODEL = cfg.ui.agent.model;
+      });
+      path = cfg.ui.agent.claude;
+      serviceConfig = {
+        EnvironmentFile = lib.mkIf (cfg.ui.agent.keyFile != null) cfg.ui.agent.keyFile;
+        ExecStartPre = "+${pkgs.writeShellScript "locus-ui-code" ''
+          set -eu
+          code=$(${cfg.urbit.codePackage}/bin/urbit-code)
+          ${pkgs.coreutils}/bin/install -m 0400 -o "$(${pkgs.coreutils}/bin/stat -c %u /run/locus-ui)" \
+            /dev/null /run/locus-ui/code
+          printf '%s\n' "$code" > /run/locus-ui/code
+        ''}";
+        ExecStart = lib.getExe' cfg.ui.package "locus-ui-host";
+        DynamicUser = true;
+        StateDirectory = "locus-ui";
+        StateDirectoryMode = "0700";
+        RuntimeDirectory = "locus-ui";
+        RuntimeDirectoryMode = "0700";
+        # Until the ship answers on conn.sock, urbit-code fails; retry.
+        Restart = "on-failure";
+        RestartSec = "10s";
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
+        RestrictAddressFamilies = "AF_UNIX AF_INET AF_INET6";
+        SystemCallArchitectures = "native";
+      };
+    };
+    # Seeds an empty store and upgrades an older one, through the host.
+    systemd.services.locus-ui-store = lib.mkIf (cfg.ui.enable && cfg.ui.seed.enable) {
+      description = "Seed or upgrade the store for the Locus interface";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "locus-ui.service" ];
+      requires = [ "locus-ui.service" ];
+      path = [ pkgs.curl ];
+      environment = {
+        LOCUS_URL = "http://127.0.0.1:${toString cfg.ui.port}";
+      }
+      // lib.optionalAttrs (!cfg.ui.seed.samples) { LOCUS_REAL = "1"; };
+      script = ''
+        for _ in $(seq 1 150); do
+          curl -fsS -o /dev/null --max-time 5 "$LOCUS_URL/store/~/v1/state" && break
+          sleep 2
+        done
+        ${lib.getExe' cfg.ui.package "locus-ui-seed"}
+        ${lib.getExe' cfg.ui.package "locus-ui-upgrade"}
+      '';
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        DynamicUser = true;
+      };
+    };
+
+    networking.firewall.allowedTCPPorts =
+      lib.optional (cfg.gateway.enable && cfg.gateway.openFirewall) cfg.gateway.port
+      ++ lib.optional (cfg.ui.enable && cfg.ui.openFirewall) cfg.ui.port;
   };
 }

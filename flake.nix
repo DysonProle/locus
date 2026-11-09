@@ -78,6 +78,8 @@
           # Every Locus server serves the browser app at /app/ out of the box.
           locus.server.gateway.webRoot =
             lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.locus-web;
+          locus.server.ui.package =
+            lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.locus-ui;
           # The desk and the deploy script, without the rest of the repo, so
           # an unrelated change does not redeploy the desk.
           locus.server.desk.source = lib.mkDefault (
@@ -361,6 +363,9 @@
             };
             wasm-bindgen-cli = pkgs.callPackage ./nix/pkgs/wasm-bindgen-cli.nix { };
           };
+
+          # The interface (ui/) and its host; see nix/pkgs/locus-ui.nix.
+          locus-ui = pkgs.callPackage ./nix/pkgs/locus-ui.nix { };
 
           default = self.packages.${system}.notes-app;
         }

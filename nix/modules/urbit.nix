@@ -128,6 +128,14 @@ in
 
     package = lib.mkPackageOption pkgs "urbit" { };
 
+    codePackage = lib.mkOption {
+      type = lib.types.package;
+      readOnly = true;
+      internal = true;
+      default = urbitCode;
+      description = "`urbit-code`, which prints the ship's +code (run as root).";
+    };
+
     ship = lib.mkOption {
       type = lib.types.enum [
         "comet"
