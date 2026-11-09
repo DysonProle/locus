@@ -99,6 +99,14 @@
         description = "A Locus clan server (fill in host.nix)";
       };
 
+      # `nix flake new -t github:maxiomattic/locus#exe-dev <dir>`: the
+      # services on an exe.dev VM (Ubuntu), applied with system-manager.
+      # No disk is formatted. See templates/exe-dev/README.md.
+      templates.exe-dev = {
+        path = ./templates/exe-dev;
+        description = "Locus on an exe.dev VM (Ubuntu + Nix + system-manager, no ZFS)";
+      };
+
       nixosModules.client =
         { pkgs, lib, ... }:
         {
